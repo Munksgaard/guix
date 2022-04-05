@@ -217,11 +217,13 @@ given Haskell package."
          (if (not (vhash-assoc id seen))
              (let ((dep-conf  (string-append src  "/" id ".conf"))
                    (dep-conf* (string-append dest "/" id ".conf")))
-               (when (not (file-exists? dep-conf))
+               (unless (file-exists? dep-conf*)
+                 (when (not (file-exists? dep-conf))
                    (error (format #f "File ~a does not exist. This usually means the dependency ~a is missing. Was checking conf-file ~a." dep-conf id conf-file)))
-               (copy-file dep-conf dep-conf*) ;XXX: maybe symlink instead?
-               (loop (vhash-cons id #t seen)
-                     (append lst (conf-depends dep-conf))))
+                 (copy-file dep-conf dep-conf*) ;XXX: maybe symlink instead?
+
+                 (loop (vhash-cons id #t seen)
+                       (append lst (conf-depends dep-conf*)))))
              (loop seen tail))))))
 
   (let* ((out (assoc-ref outputs "out"))
@@ -234,13 +236,12 @@ given Haskell package."
                                     "/ghc-" version
                                     "/" name ".conf.d"))
          (id-rx (make-regexp "^id:[ \n\t]+([^ \t\n]+)$" regexp/newline))
-         (config-file (string-append out "/" name ".conf"))
+         (config-output (string-append out "/" name ".conf"))
          (params
-          (list (string-append "--gen-pkg-config=" config-file))))
+          (list (string-append "--gen-pkg-config=" config-output))))
     (run-setuphs "register" params)
-    ;; The conf file is created only when there is a library to register.
-    (when (file-exists? config-file)
-      (mkdir-p config-dir)
+
+    (define (install-from-config-file config-file)
       (let* ((contents (call-with-input-file config-file read-string))
              (config-file-name+id (match:substring (first (list-matches id-rx contents)) 1)))
 
@@ -270,10 +271,17 @@ given Haskell package."
         (install-transitive-deps config-file %tmp-db-dir config-dir)
         (rename-file config-file
                      (string-append config-dir "/"
-                                    config-file-name+id ".conf"))
-        (invoke "ghc-pkg"
-                (string-append "--package-db=" config-dir)
-                "recache")))
+                                    config-file-name+id ".conf"))))
+
+    ;; The conf file is created only when there is a library to register.
+    (when (file-exists? config-output)
+      (mkdir-p config-dir)
+      (if (file-is-directory? config-output)
+          (for-each install-from-config-file (find-files config-output))
+          (install-from-config-file config-output))
+      (invoke "ghc-pkg"
+              (string-append "--package-db=" config-dir)
+              "recache"))
     #t))
 
 (define* (check #:key tests? test-target #:allow-other-keys)
